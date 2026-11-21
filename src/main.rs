@@ -1,83 +1,70 @@
-#![cfg_attr(target_os = "xous", no_std)]
-#![cfg_attr(target_os = "xous", no_main)]
+#![cfg_attr(target_os = "none", no_std)]
+#![cfg_attr(target_os = "none", no_main)]
 
-extern crate alloc;
+//! Sacred Geometry for Precursor. The constructions live in `sacred-core`
+//! (host-tested). This file routes messages; nothing animates,
+//! so there is no pump: the app is idle between key presses.
 
 mod app;
-mod geometry;
-mod ui;
 
-use app::SacredApp;
+use num_traits::{FromPrimitive, ToPrimitive};
+use precursor_appkit::{app as kit, keys};
 
-const SERVER_NAME: &str = "sacred_geometry";
-const APP_NAME: &str = "Sacred Geometry";
+/// xous-names server name. Any unique string; NOT the GAM app name.
+const SERVER_NAME: &str = "_Sacred Geometry_";
 
 #[derive(Debug, num_derive::FromPrimitive, num_derive::ToPrimitive)]
-pub enum AppOp {
+pub(crate) enum AppOp {
     Redraw = 0,
-    Rawkeys = 1,
-    FocusChange = 2,
-    Quit = 255,
+    Rawkeys,
+    FocusChange,
+    Quit,
 }
 
 fn main() -> ! {
     log_server::init_wait().unwrap();
     log::set_max_level(log::LevelFilter::Info);
-    log::info!("{} starting", APP_NAME);
+    log::info!("sacred PID is {}", xous::process::id());
 
     let xns = xous_names::XousNames::new().unwrap();
-    let sid = xns.register_name(SERVER_NAME, None).expect("register name");
+    let sid = xns.register_name(SERVER_NAME, None).expect("can't register server");
 
-    let gam = gam::Gam::new(&xns).unwrap();
-    let _token = gam
-        .register_ux(gam::UxRegistration {
-            app_name: xous::String::<128>::from_str(APP_NAME),
-            ux_type: gam::UxType::Chat,
-            predictor: None,
-            listener: sid.to_array(),
-            redraw_id: AppOp::Redraw as u32,
-            gotinput_id: None,
-            audioframe_id: None,
-            rawkeys_id: Some(AppOp::Rawkeys as u32),
-            focuschange_id: Some(AppOp::FocusChange as u32),
-        })
-        .expect("register UX");
+    // GAM app name comes from apps/manifest.json key "sacred".
+    let reg = kit::register(
+        &xns,
+        sid,
+        gam::APP_NAME_SACRED,
+        gam::UxType::Framebuffer,
+        kit::Opcodes {
+            redraw: AppOp::Redraw.to_u32().unwrap(),
+            rawkeys: Some(AppOp::Rawkeys.to_u32().unwrap()),
+            focus_change: Some(AppOp::FocusChange.to_u32().unwrap()),
+            got_input: None,
+        },
+    );
 
-    let mut app = SacredApp::new();
+    let mut app = app::App::new(reg.screen);
 
     loop {
         let msg = xous::receive_message(sid).unwrap();
-        let op: Option<AppOp> = num_traits::FromPrimitive::from_usize(msg.body.id());
-
-        match op {
-            Some(AppOp::Redraw) => {
-                app.needs_redraw = true;
-            }
-            Some(AppOp::Rawkeys) => {
-                let rawkeys = gam::RawkeysEvent::from_message(&msg);
-                if let Some(c) = rawkeys.char() {
-                    if !app.handle_key(c) {
-                        gam.relinquish_focus().unwrap();
-                        xous::wait_thread(core::time::Duration::from_millis(100));
-                        break;
+        match FromPrimitive::from_usize(msg.body.id()) {
+            Some(AppOp::Redraw) => app.draw(),
+            Some(AppOp::Rawkeys) => xous::msg_scalar_unpack!(msg, k1, k2, k3, k4, {
+                for key in keys::decode_rawkeys([k1, k2, k3, k4]) {
+                    if app.on_key(key) == app::Action::Leave {
+                        kit::leave(app.screen());
                     }
                 }
-            }
-            Some(AppOp::FocusChange) => {
-                app.needs_redraw = true;
-            }
-            Some(AppOp::Quit) => {
-                break;
-            }
-            _ => {}
-        }
-
-        if app.needs_redraw {
-            ui::draw(&gam, &app);
-            app.needs_redraw = false;
+                app.draw();
+            }),
+            Some(AppOp::FocusChange) => xous::msg_scalar_unpack!(msg, code, _, _, _, {
+                if let gam::FocusState::Foreground = kit::focus_state(code) {
+                    app.on_foreground();
+                }
+            }),
+            Some(AppOp::Quit) => break,
+            None => log::warn!("unknown opcode {:?}", msg.body.id()),
         }
     }
-
-    xns.unregister_server(sid).unwrap();
-    xous::terminate_process(0)
+    kit::shutdown(&xns, sid)
 }

@@ -1,103 +1,107 @@
-//! State machine for Sacred Geometry.
-//!
-//! States:
-//!   Selector  — choose a sacred geometry figure
-//!   Viewing   — display the figure with size adjustment
+//! Keys -> core, and drawing. Lines go through `Screen::lines` (clipped to the
+//! content area); circles are drawn as outlines by GAM and clipped to the
+//! canvas, then the header and footer bands are repainted over any spill.
 
-extern crate alloc;
-use alloc::vec::Vec;
+use gam::menu::{Circle, DrawStyle, PixelColor, Point};
+use gam::GlyphStyle;
+use precursor_appkit::keys::Key;
+use precursor_appkit::screen::Screen;
+use sacred_core::model::{Model, Outcome, Screen as View};
+use sacred_core::Prim;
 
-use crate::geometry::{self, Primitive};
-
-const KEY_UP: char = '\u{F700}';
-const KEY_DOWN: char = '\u{F701}';
-const KEY_LEFT: char = '\u{F702}';
-const KEY_RIGHT: char = '\u{F703}';
-const KEY_ENTER: char = '\u{000D}';
-const KEY_MENU: char = '\u{2234}';
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum AppState {
-    Selector,
-    Viewing,
+#[derive(PartialEq, Eq)]
+pub enum Action {
+    Stay,
+    Leave,
 }
 
-pub struct SacredApp {
-    pub state: AppState,
-    pub needs_redraw: bool,
-
-    pub cursor: usize,
-    pub radius: i16,
-
-    // Precomputed drawing primitives
-    pub primitives: Vec<Primitive>,
+pub struct App {
+    screen: Screen,
+    model: Model,
 }
 
-impl SacredApp {
-    pub fn new() -> Self {
-        Self {
-            state: AppState::Selector,
-            needs_redraw: true,
-            cursor: 0,
-            radius: 120,
-            primitives: Vec::new(),
+impl App {
+    pub fn new(screen: Screen) -> Self { Self { screen, model: Model::new() } }
+
+    pub fn screen(&self) -> &Screen { &self.screen }
+
+    pub fn on_key(&mut self, key: Key) -> Action {
+        match self.model.on_key(key) {
+            Outcome::Leave => Action::Leave,
+            Outcome::Stay => Action::Stay,
         }
     }
 
-    fn compute_figure(&mut self) {
-        let cx: i16 = 168;
-        let cy: i16 = 260;
-        self.primitives = geometry::generate(self.cursor, cx, cy, self.radius);
+    pub fn on_foreground(&mut self) {
+        self.screen.refresh_size();
+        self.draw();
     }
 
-    pub fn handle_key(&mut self, key: char) -> bool {
-        self.needs_redraw = true;
-        match self.state {
-            AppState::Selector => self.handle_selector(key),
-            AppState::Viewing => self.handle_viewing(key),
+    pub fn draw(&mut self) {
+        self.screen.clear();
+        match self.model.screen {
+            View::Selector => self.draw_selector(),
+            View::Viewing => self.draw_viewing(),
         }
+        self.screen.flush();
     }
 
-    fn handle_selector(&mut self, key: char) -> bool {
-        let names = geometry::figure_names();
-        match key {
-            KEY_MENU => return false,
-            KEY_UP => {
-                if self.cursor > 0 {
-                    self.cursor -= 1;
-                }
-            }
-            KEY_DOWN => {
-                if self.cursor < names.len() - 1 {
-                    self.cursor += 1;
-                }
-            }
-            KEY_ENTER => {
-                self.compute_figure();
-                self.state = AppState::Viewing;
-            }
-            _ => {}
-        }
-        true
+    fn draw_selector(&mut self) {
+        let top = self.screen.header("Sacred Geometry");
+        let bottom = self.screen.footer("↑↓ choose · ⏎ view · ⌫ back");
+        let note_h = 3 * self.screen.line_height(GlyphStyle::Small) + 6;
+        let labels = self.model.labels();
+        let rows = self.screen.list(top, bottom - note_h, &labels, &self.model.list);
+        self.model.set_visible(rows);
+        self.screen.para(bottom - note_h + 4, bottom, GlyphStyle::Small, self.model.figure().note());
     }
 
-    fn handle_viewing(&mut self, key: char) -> bool {
-        match key {
-            KEY_MENU | KEY_LEFT | KEY_ENTER => {
-                self.state = AppState::Selector;
+    fn draw_viewing(&mut self) {
+        let size = self.screen.size();
+        let w = size.x as i32;
+        // Same geometry as Screen::header / Screen::footer.
+        let top = self.screen.line_height(GlyphStyle::Bold) + 8;
+        let bottom = size.y - self.screen.line_height(GlyphStyle::Small) - 6;
+        let h = (bottom - top).max(1) as i32;
+        let dy = top as i32;
+        self.model.set_area(w, h);
+        let title = self.model.title();
+
+        let mut segs = Vec::new();
+        let mut circles = Vec::new();
+        for p in self.model.prims() {
+            match *p {
+                Prim::Line((x0, y0), (x1, y1)) => segs.push(((x0, y0 + dy), (x1, y1 + dy))),
+                Prim::Circle((cx, cy), r) => circles.push(((cx, cy + dy), r)),
             }
-            KEY_UP => {
-                // Increase size
-                self.radius = (self.radius + 10).min(200);
-                self.compute_figure();
-            }
-            KEY_DOWN => {
-                // Decrease size
-                self.radius = (self.radius - 10).max(40);
-                self.compute_figure();
-            }
-            _ => {}
         }
-        true
+        self.screen.lines(segs, ((0, dy), (w - 1, dy + h - 1)), 1);
+        self.outline_circles(&circles, w, size.y as i32);
+
+        // Repaint the bands over any circle that spilled into them.
+        self.screen.fill(Point::new(0, 0), Point::new(size.x - 1, top - 5), PixelColor::Light);
+        self.screen.fill(Point::new(0, bottom + 1), Point::new(size.x - 1, size.y - 1), PixelColor::Light);
+        self.screen.header(&title);
+        self.screen.footer("↑↓ size · ←→ figure · ⌫ back");
+    }
+
+    /// Circle outlines with no fill. (`Screen::circles` fills with white, which
+    /// would erase the arcs of circles drawn earlier in an overlapping figure.)
+    fn outline_circles(&self, circles: &[((i32, i32), i32)], w: i32, h: i32) {
+        let style = DrawStyle { fill_color: None, stroke_color: Some(PixelColor::Dark), stroke_width: 1 };
+        let mut list = gam::GamObjectList::new(self.screen.gid());
+        for &((cx, cy), r) in circles {
+            // skip circles wholly off the canvas, and absurd sizes (cost grows with r squared)
+            if r <= 0 || r > 700 || cx + r < 0 || cy + r < 0 || cx - r >= w || cy - r >= h {
+                continue;
+            }
+            let circ = Circle::new_with_style(Point::new(cx as isize, cy as isize), r as isize, style);
+            if let Err(obj) = list.push(gam::GamObjectType::Circ(circ)) {
+                self.screen.gam().draw_list(list).ok();
+                list = gam::GamObjectList::new(self.screen.gid());
+                list.push(obj).ok();
+            }
+        }
+        self.screen.gam().draw_list(list).ok();
     }
 }
