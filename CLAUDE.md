@@ -1,16 +1,7 @@
-# Sacred Geometry — Build Notes
+# Sacred Geometry: agent notes
 
-## What This Is
-Sacred geometry construction viewer for Precursor. Renders 10 classic figures using compass-and-straightedge constructions.
-
-## Key Decisions
-- **Primitive-based**: All figures generate Vec<Primitive> (Line/Circle), rendered by UI layer. Clean separation between geometry and rendering.
-- **Circle via polyline**: GAM has no native circle API, so circles drawn as 32-segment polylines. Good enough for 1-bit display.
-- **Polygon/star helpers**: `polygon()` and `star_polygon()` are reusable building blocks for many figures.
-- **Resizable**: Radius adjustable 40-200px in viewing mode, figures recomputed on resize.
-- **sqrt(3)/2 approx**: Vesica Piscis intersection height uses 886/1024 ≈ 0.866.
-
-## Architecture
-- 2 states: Selector, Viewing
-- 10 figures, all pure functions in geometry.rs
-- No storage, no TRNG — pure deterministic geometry
+- Package `sacred`; GAM app name `gam::APP_NAME_SACRED` (manifest key `sacred`, context name "Sacred Geometry"); xous-names server `_Sacred Geometry_`.
+- `core/` (`sacred-core`) holds the ten figures (`figures`), the Fibonacci spiral tiling (`spiral`) and the selector `Model`, with no Xous dependencies. Run `cd core && cargo test`.
+- Trig is `precursor_appkit_core::fixed`; never add a local sine table.
+- `src/` is the shell: `UxType::Framebuffer`, raw keys, no pump, lines through `Screen::lines`, circles as unfilled GAM circles (local helper; `Screen::circles` fills white), header/footer repainted over circle spill.
+- Gate: `xous-dev-toolkit/bin/integrate --xous-root <tree> --grade <repo>`.

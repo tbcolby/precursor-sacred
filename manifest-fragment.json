@@ -1,0 +1,14 @@
+{
+    "sacred": {
+        "context_name": "Sacred Geometry",
+        "menu_name": {
+            "appmenu.sacred": {
+                "en": "Sacred Geometry",
+                "en-tts": "Sacred Geometry",
+                "fr": "Sacred Geometry",
+                "ja": "Sacred Geometry",
+                "zh": "Sacred Geometry"
+            }
+        }
+    }
+}
